@@ -34,7 +34,7 @@ static void do_something(int connfd) {
     send(connfd, wbuf, strlen(wbuf), 0);
 }
 
-static uint32_t read_full(int fd, char* buf, size_t len) {
+static int32_t read_full(int fd, char* buf, size_t len) {
     while (len > 0) {
         ssize_t rv = recv(fd, buf, len, 0);
         if (rv <= 0) return -1; //error or unexpected EOF
@@ -45,7 +45,7 @@ static uint32_t read_full(int fd, char* buf, size_t len) {
     return 0;
 }
 
-static uint32_t write_full(int fd, const char* buf, size_t len) {
+static int32_t write_full(int fd, const char* buf, size_t len) {
     while (len > 0) {
         ssize_t rv = send(fd, buf, len, 0);
         if (rv <= 0) return -1; //error
@@ -113,12 +113,12 @@ int main() {
     if (rv) die("listen");
 
     while (1) {
+        //accept
         struct sockaddr_in client_addr;
         socklen_t client_addr_len = sizeof(client_addr);
         int connfd = accept(fd, (struct sockaddr*)&client_addr, &client_addr_len);
         if (connfd < 0) {continue;}
 
-        do_something(connfd);
         while (1) {
             int32_t err = one_request(connfd);
             if (err) break;
