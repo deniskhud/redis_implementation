@@ -18,7 +18,7 @@ static void msg(const char* msg) {
 
 static void die(const char* msg) {
     int err = errno;
-    fprintf(stderr, "[%s] %s\n", err, msg);
+    fprintf(stderr, "[%d] %s\n", err, msg);
     abort();
 }
 
@@ -38,7 +38,7 @@ static int32_t read_full(int fd, char* buf, size_t len) {
     while (len > 0) {
         ssize_t rv = recv(fd, buf, len, 0);
         if (rv <= 0) return -1; //error or unexpected EOF
-        assert((ssize_t)rv <= len);
+        assert((size_t)rv <= len);
         len -= (size_t)rv;
         buf += rv;
     }
@@ -50,7 +50,7 @@ static int32_t write_full(int fd, const char* buf, size_t len) {
         ssize_t rv = send(fd, buf, len, 0);
         if (rv <= 0) return -1; //error
 
-        assert((ssize_t)rv <= len);
+        assert((size_t)rv <= len);
         len -= (size_t)rv;
         buf += rv;
     }
@@ -58,7 +58,7 @@ static int32_t write_full(int fd, const char* buf, size_t len) {
 }
 
 //read 1 request and send 1 response
-static uint32_t one_request(connfd) {
+static int32_t one_request(int connfd) {
     char rbuf[4 + k_max_msg];
     errno = 0;
     int32_t err = read_full(connfd, rbuf, 4);
@@ -67,7 +67,7 @@ static uint32_t one_request(connfd) {
         return err;
     }
     uint32_t len = 0;
-    memcpy(&len, rbuf, sizeof(rbuf));   //assume little endian
+    memcpy(&len, rbuf, 4);   //assume little endian
     if (len > k_max_msg) {
         msg("too long");
         return -1;
@@ -102,11 +102,11 @@ int main() {
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
 
     //bind
-    struct sockaddr_in addr;
+    struct sockaddr_in addr = {};
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(1234);
-    addr.sin_addr.s_addr = ntohs(0);
-    int rv = bind(fd, (struct sockaddr*)&addr, sizeof(addr));
+    addr.sin_port = ntohs(1234);
+    addr.sin_addr.s_addr = ntohl(0);
+    int rv = bind(fd, (const struct sockaddr*)&addr, sizeof(addr));
     if (rv) die("bind");
 
     rv = listen(fd, SOMAXCONN);
