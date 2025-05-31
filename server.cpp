@@ -14,6 +14,8 @@
 
 
 #include<vector>
+#include<string>
+#include<map>
 
 //defines
 const size_t k_max_msg = 32 << 20; //larger than the kernel buf
@@ -32,6 +34,7 @@ static void die(const char* msg) {
     abort();
 }
 
+//set a non block mode
 static void fd_set_nb(int fd) {
     errno = 0;
     int flags = fcntl(fd, F_GETFL, 0);
@@ -41,7 +44,7 @@ static void fd_set_nb(int fd) {
     }
 
     errno = 0;
-    (void)fcntl(fd, F_SETFL, flags);
+    (void)fcntl(fd, F_SETFL, flags | O_NONBLOCK);
     if (errno) {
         die("fcntl");
     }
@@ -92,12 +95,105 @@ static Conn* handle_accept(int fd) {
 
 }
 
+const size_t k_max_args = 200 * 1000;
+
+static bool read_u32(const uint8_t*& cur, const uint8_t* end, uint32_t& out) {
+    if (cur + 4 > end) {
+        return false;
+    }
+    memcpy(&out, cur, 4);
+
+    cur += 4;
+    return true;
+}
+
+static bool read_str(const uint8_t*& cur, const uint8_t* end, size_t n, std::string& out) {
+    if (cur + n > end) {
+        return false;
+    }
+    out.assign(cur, cur + n);
+    cur += n;
+    return true;
+}
+
+static int32_t parse_req(const uint8_t* data, size_t size, std::vector<std::string>& out) {
+    const uint8_t* end = data + size;
+    uint32_t nstr = 0;
+    if (!read_u32(data, end, nstr)) {
+        return -1;
+    }
+    if (nstr > k_max_args) {
+        return -1;      //safety limit
+    }
+    while (out.size() < nstr) {
+        uint32_t len = 0;
+        if (!read_u32(data, end, len)) {
+            return -1;
+        }
+        out.push_back(std::string());
+        if (!read_str(data, end, len, out.back())) {
+            return -1;
+        }
+    }
+    if (data != end) {
+        return -1;
+    }
+    return 0;
+}
+
+
+//responce status
+enum {
+    RES_OK = 0,
+    RES_ERR,
+    RES_NX
+};
+
+struct Response {
+    uint32_t status = 0;
+    std::vector<uint8_t> data;
+};
+
+//placeholder; later
+
+static std::map<std::string, std::string> g_data;
+
+
+static void do_request(std::vector<std::string>& cmd, Response& out) {
+    if (cmd.size() == 2 && cmd[0] == "get") {
+        auto it = g_data.find(cmd[1]);
+        if (it == g_data.end()) {
+            out.status = RES_NX; //not found
+            return;
+        }
+        const std::string& val = it->second;
+        out.data.assign(val.begin(), val.end());
+    }
+    else if (cmd.size() == 3 && cmd[0] == "set") {
+        g_data[cmd[1]].swap(cmd[2]);
+    }
+    else if (cmd.size() == 2 && cmd[0] == "del") {
+        g_data.erase(cmd[1]);
+    }
+    else {
+        out.status = RES_ERR;       //unrecognized command
+    }
+}
+
+static void make_response(const Response& resp, std::vector<uint8_t>& out) {
+    uint32_t resp_len = 4 + (uint32_t)resp.data.size();
+    buf_append(out, (const uint8_t*)&resp_len, 4);
+    buf_append(out, (const uint8_t*)&resp.status, 4);
+    buf_append(out, resp.data.data(), resp.data.size());
+}
+
 //process 1 request if there is enough data
 static bool try_one_request(Conn* conn) {
     //try to parse the protocol: message header
     if (conn->incoming.size() < 4) {
         return false;   //want read
     }
+
     uint32_t len = 0;
     memcpy(&len, conn->incoming.data(), 4);
     if (len > k_max_msg) {
@@ -112,13 +208,15 @@ static bool try_one_request(Conn* conn) {
     const uint8_t* request = &conn->incoming[4];
 
     //got one request do some app logic
-    printf("client says: len: %d data: %.*s\n",
-        len, len < 100 ? len : 100, request);
-
-    //generate the response
-    buf_append(conn->outgoing, (const uint8_t*)&len, 4);
-    buf_append(conn->outgoing, request, len);
-
+    std::vector<std::string> cmd;
+    if (parse_req(request, len, cmd) < 0) {
+        msg("bad request");
+        conn->want_close = true;
+        return false;
+    }
+    Response resp;
+    do_request(cmd, resp);
+    make_response(resp, conn->outgoing);
     //app logic done remove the request message
     buf_consume(conn->incoming,4 + len);
     return true;
@@ -170,87 +268,14 @@ static void handle_read(Conn* conn) {
 
     //parse requests and generate responses
     while (try_one_request(conn)) {
-        if (conn->outgoing.size() > 0) {
-            conn->want_read = false;
-            conn->want_write = true;
 
-            return handle_write(conn);
-        }
     }
-
+    if (conn->outgoing.size() > 0) {
+        conn->want_read = false;
+        conn->want_write = true;
+        return handle_write(conn);
+    }
 }
-
-static void do_something(int connfd) {
-    char rbuf[64] = {};
-    ssize_t n = recv(connfd, rbuf, sizeof(rbuf) - 1, 0);
-    if (n < 0) {
-        msg("read() error");
-        return;
-    }
-    fprintf(stderr, "client says: %s\n", rbuf);
-    char wbuf[] = "word";
-    send(connfd, wbuf, strlen(wbuf), 0);
-}
-
-static int32_t read_full(int fd, char* buf, size_t len) {
-    while (len > 0) {
-        ssize_t rv = recv(fd, buf, len, 0);
-        if (rv <= 0) return -1; //error or unexpected EOF
-        assert((size_t)rv <= len);
-        len -= (size_t)rv;
-        buf += rv;
-    }
-    return 0;
-}
-
-static int32_t write_full(int fd, const char* buf, size_t len) {
-    while (len > 0) {
-        ssize_t rv = send(fd, buf, len, 0);
-        if (rv <= 0) return -1; //error
-
-        assert((size_t)rv <= len);
-        len -= (size_t)rv;
-        buf += rv;
-    }
-    return 0;
-}
-
-//read 1 request and send 1 response
-static int32_t one_request(int connfd) {
-    char rbuf[4 + k_max_msg];
-    errno = 0;
-    int32_t err = read_full(connfd, rbuf, 4);
-    if (err) {
-        msg(errno == 0 ? "EOF" : "read() error");
-        return err;
-    }
-    uint32_t len = 0;
-    memcpy(&len, rbuf, 4);   //assume little endian
-    if (len > k_max_msg) {
-        msg("too long");
-        return -1;
-    }
-    //request body
-
-    err = read_full(connfd, &rbuf[4], len);
-    if (err) {
-        msg("read() error");
-        return err;
-    }
-    //do something
-    printf("client says: %.*s\n",len, &rbuf[4]);
-
-    //reply using the same protocol
-    const char reply[] = "world";
-    char wbuf[4 + sizeof(reply)];
-    len = (uint32_t)strlen(reply);
-    memcpy(wbuf, &len, 4);
-    memcpy(&wbuf[4], reply, len);
-    return write_full(connfd, wbuf, 4 + len);
-
-
-}
-
 
 int main() {
     //the listen socket
