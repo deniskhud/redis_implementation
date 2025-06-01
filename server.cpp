@@ -15,7 +15,12 @@
 
 #include<vector>
 #include<string>
-#include<map>
+
+
+#include "hashtable.h"
+
+#define container_of(ptr, T, member) \
+    ((T *)( (char *)ptr - offsetof(T, member) ))
 
 //defines
 const size_t k_max_msg = 32 << 20; //larger than the kernel buf
@@ -154,26 +159,85 @@ struct Response {
     std::vector<uint8_t> data;
 };
 
-//placeholder; later
+static struct {
+    HMap db;
+} g_data;
 
-static std::map<std::string, std::string> g_data;
+struct Entry {
+    struct Node node;
+    std::string key;
+    std::string value;
+};
 
+static bool entry_eq(Node* lhs, Node* rhs) {
+    struct Entry* lhs_entry = container_of(lhs, struct Entry, node);
+    struct Entry* rhs_entry = container_of(rhs, struct Entry, node);
+    return lhs_entry->key == rhs_entry->key;
+}
+
+static uint64_t str_hash(const uint8_t* data, size_t len) {
+    uint32_t h = 0x811c9dc5;
+    for (size_t i = 0; i < len; i++) {
+        h = (h + data[i]) * 0x01000193;
+    }
+    return h;
+}
+
+static void do_get(std::vector<std::string>& cmd, Response& out) {
+    Entry key;
+    key.key.swap(cmd[1]);
+    key.node.code = str_hash((uint8_t*)key.key.data(), key.key.size());
+    //hashtable lookup
+    Node* node = hm_lookup(&g_data.db, &key.node, &entry_eq);
+    if (!node) {
+        out.status = RES_NX;
+        return;
+    }
+    //copy the value
+    const std::string& val = container_of(node, Entry, node)->value;
+    assert(val.size() <= k_max_msg);
+    out.data.assign(val.begin(), val.end());
+}
+
+static void do_set(std::vector<std::string>& cmd, Response &) {
+    Entry key;
+    key.key.swap(cmd[1]);
+    key.node.code = str_hash((uint8_t*)key.key.data(), key.key.size());
+    //lookup
+
+    Node* node = hm_lookup(&g_data.db, &key.node, &entry_eq);
+    if (node) {
+        container_of(node, Entry, node)->value.swap(cmd[2]);
+    }
+    else {
+        Entry* ent = new Entry();
+        ent->key.swap(key.key);
+        ent->node.code = key.node.code;
+        ent->value.swap(cmd[2]);
+        hm_insert(&g_data.db, &ent->node);
+    }
+}
+
+static void do_del(std::vector<std::string>& cmd, Response &) {
+    Entry key;
+    key.key.swap(cmd[1]);
+    key.node.code = str_hash((uint8_t*)key.key.data(), key.key.size());
+    //delete
+    Node* node = hm_delete(&g_data.db, &key.node, &entry_eq);
+    if (node) {
+        delete container_of(node, Entry, node);
+    }
+}
 
 static void do_request(std::vector<std::string>& cmd, Response& out) {
     if (cmd.size() == 2 && cmd[0] == "get") {
-        auto it = g_data.find(cmd[1]);
-        if (it == g_data.end()) {
-            out.status = RES_NX; //not found
-            return;
-        }
-        const std::string& val = it->second;
-        out.data.assign(val.begin(), val.end());
+        return do_get(cmd, out);
     }
     else if (cmd.size() == 3 && cmd[0] == "set") {
-        g_data[cmd[1]].swap(cmd[2]);
+        return do_set(cmd, out);
     }
     else if (cmd.size() == 2 && cmd[0] == "del") {
-        g_data.erase(cmd[1]);
+        do_del(cmd, out);
     }
     else {
         out.status = RES_ERR;       //unrecognized command
