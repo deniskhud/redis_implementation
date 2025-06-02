@@ -25,3 +25,6 @@ Node* hm_lookup(HMap* hmap, Node* key, bool(*eq)(Node* , Node* ));
 void hm_insert(HMap* hmap, Node* node);
 Node* hm_delete(HMap* hmap, Node* key, bool(*eq)(Node*, Node*));
 size_t hm_size(HMap* hmap);
+void hm_clear(HMap* hmap);
+size_t hm_size(HMap* hmap);
+void hm_foreach(HMap* hmap, bool(*f)(Node* , void*), void* arg);
