@@ -1,6 +1,10 @@
 # redis implementation
 
-## a simple redis implementation written in C
+ A simple redis implementation written in C++
 
-##Features 
--Soon...
+## Features
+ 
+- key - value storage data
+- custom hash table
+- architecture client-server (TCP socket)
+- RESP 
